@@ -1,0 +1,166 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Parameters:
+  BucketName:
+    Type: String
+    Default: example-bucket
+  ScheduledExpression:
+    Type: String
+    Default: cron(0 23 ? * FRI *)
+Resources:
+#----------------------------Lambda Functions----------------------------
+  TriggerBackUpLambda:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.7
+      CodeUri: ./lambdas/TriggerBackup
+      Description: 'Triggers Backup of Codecommit repository.'
+      MemorySize: 128
+      Timeout: 30
+      Role: !GetAtt TriggerBackUpLambdaRole.Arn
+      Events:
+        CwEvent:
+            Type: Schedule
+            Properties:
+              Schedule: !Ref ScheduledExpression
+      Environment:
+        Variables:
+          BACKUP_LAMBDA_ARN: !GetAtt BackUpLambda.Arn
+          REPOSITORIES: '*'
+  BackUpLambda:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.7
+      CodeUri: ./lambdas/ExecuteBackup
+      Description: 'Triggers Backup of Codecommit repository.'
+      MemorySize: 128
+      Timeout: 300
+      Layers:
+        - !Ref AwsCliLayer
+        - !Ref GitLayer
+        - !Ref GitPythonLayer
+      Role: !GetAtt BackUpLambdaRole.Arn
+      Environment:
+        Variables:
+          S3BUCKET: !Ref 'BucketName'
+#-----------------------------Lambda Layers------------------------------
+  AwsCliLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      Description: Lambda Layer for AwsCli
+      ContentUri: ./layers/awscli-layer.zip
+      CompatibleRuntimes:
+        - python3.8
+        - python3.7
+  GitLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      Description: Lambda Layer for git
+      ContentUri: ./layers/git-layer.zip
+      CompatibleRuntimes:
+        - python3.8
+        - python3.7
+  GitPythonLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      Description: Lambda Layer for git python
+      ContentUri: ./layers/gitpython-layer.zip
+      CompatibleRuntimes:
+        - python3.8
+        - python3.7
+#--------------------------------Roles-----------------------------------
+  TriggerBackUpLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: 'TriggerBackUpLambdaRole'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaCWPermissionsPolicy
+        - !Ref LambdaInvoke
+        - !Ref ListCodecommitRepos
+  BackUpLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: 'BackUpLambdaRole'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaCWPermissionsPolicy
+        - !Ref PullCodecommitRepos
+        - !Ref S3Write
+#-------------------------------Policies---------------------------------
+  LambdaCWPermissionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+              - 'logs:DescribeLogStreams'
+              - 'logs:GetLogEvents'
+              - 'logs:CreateLogGroup'
+            Resource:
+              - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*'
+  LambdaInvoke:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'lambda:InvokeFunction'
+            Resource:
+              - !GetAtt BackUpLambda.Arn
+  ListCodecommitRepos:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'codecommit:ListRepositories'
+            Resource: '*'
+  PullCodecommitRepos:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'codecommit:GitPull' 
+            Resource: '*'
+  S3Write:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 's3:PutObject' 
+            Resource: 
+              - !Sub 'arn:aws:s3:::${BucketName}'
+              - !Sub 'arn:aws:s3:::${BucketName}/*'
